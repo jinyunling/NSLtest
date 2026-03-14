@@ -21,7 +21,7 @@ def download_gpt2_files(model_size, model_dir):
         "model.ckpt.meta",
         "vocab.bpe",
     ]:
-        url = "https://openaipublic.blob.core.windows.net/gpt-2/models"
+        url ="https://openaipublic.blob.core.windows.net/gpt-2/models"
         r = requests.get(f"{url}/{model_size}/{filename}", stream=True)
         r.raise_for_status()
 
