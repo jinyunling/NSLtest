@@ -7,14 +7,21 @@ import time
 import math
 torch.set_printoptions(8)
 cache = {"k": {}, "v": {}}
-for i in range(12):                      # 遍历层
-    cache["k"][f"layer{i}"] = {}          # 为第 i 层创建 k 子字典
-    cache["v"][f"layer{i}"] = {}          # 为第 i 层创建 v 子字典
-    for head in range(12):                # 遍历头
+for i in range(12):                     
+    cache["k"][f"layer{i}"] = {}          
+    cache["v"][f"layer{i}"] = {}          
+    for head in range(12):                
         cache["k"][f"layer{i}"][str(head)] = torch.tensor([])
         cache["v"][f"layer{i}"][str(head)] = torch.tensor([])
 
-
+target_cache = {"k": {}, "v": {}}
+for i in range(48):                     
+    target_cache["k"][f"layer{i}"] = {}          
+    target_cache["v"][f"layer{i}"] = {}          
+    for head in range(48):                
+        target_cache["k"][f"layer{i}"][str(head)] = torch.tensor([])
+        target_cache["v"][f"layer{i}"][str(head)] = torch.tensor([])
+        
 def gelu(x):
     """
         Task: Use the torch API to implement the approximate calculation formula of the `GELU`
@@ -271,6 +278,8 @@ def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", m
     from utils import load_encoder_hparams_and_params
     # load encoder, hparams, and params from the released open-ai gpt-2 files
     encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
+    target_model_size:str="1558M"
+    target_encoder,target_hparams,target_params =load_encoder_hparams_and_params(target_model_size,models_dir)
 
     # encode the input string using the BPE tokenizer
     input_ids = encoder.encode(prompt)
@@ -280,7 +289,8 @@ def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", m
 
     # generate output ids
     start = time.time()
-    output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
+    k=4
+    output_ids = greedy_speculative_generate(input_ids, params, target_params,hparams,target_hparams,n_tokens_to_generate,k)
     end = time.time()
     print(f"Time taken to generate {n_tokens_to_generate} tokens: {end - start:.2f}s")
 
