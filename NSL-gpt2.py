@@ -1,8 +1,19 @@
+
+from tracemalloc import start
+
 import numpy as np
 import torch
 import time
 import math
 torch.set_printoptions(8)
+cache = {"k": {}, "v": {}}
+for i in range(12):                      # 遍历层
+    cache["k"][f"layer{i}"] = {}          # 为第 i 层创建 k 子字典
+    cache["v"][f"layer{i}"] = {}          # 为第 i 层创建 v 子字典
+    for head in range(12):                # 遍历头
+        cache["k"][f"layer{i}"][str(head)] = torch.tensor([])
+        cache["v"][f"layer{i}"][str(head)] = torch.tensor([])
+
 
 def gelu(x):
     """
@@ -87,7 +98,7 @@ def ffn(x, mlp):  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x
 
 
-def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
+def attention(q, k, v, mask,layernum,headidx):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
     """
         Task: use torch API to implement attention computation according to formula(1) of the following paper
               where d_k account for the last dimension of `k`
@@ -100,6 +111,16 @@ def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] 
             mlp: dictionary that load from gpt2 weight. w_b1 and w_b2 are the params of two linear layer
         Output: Tensor
     """
+    if(torch.numel(cache["k"]["layer"+str(layernum)][str(headidx)])!=0 and torch.numel(cache["v"]["layer"+str(layernum)][str(headidx)])!=0):
+        
+        k = torch.cat((cache["k"]["layer"+str(layernum)][str(headidx)], k), dim=0)
+        v = torch.cat((cache["v"]["layer"+str(layernum)][str(headidx)], v), dim=0)
+        cache["k"]["layer"+str(layernum)][str(headidx)] = k
+        cache["v"]["layer"+str(layernum)][str(headidx)] = v
+    else:
+        cache["k"]["layer"+str(layernum)][str(headidx)] = k
+        cache["v"]["layer"+str(layernum)][str(headidx)] = v
+        
     
     d_k = k.shape[-1]
     
@@ -121,7 +142,7 @@ def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] 
     return output
 
 
-def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
+def mha(x, attn, n_head,layernum,length):  # [n_seq, n_embd] -> [n_seq, n_embd]
     """
         Task: Complete the code of the multi-head attention
         
@@ -158,11 +179,15 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Mask is a tensor whose dimension is [n_seq, n_seq]
     """
     n_seq = x.shape[0]
-    causal_mask = torch.tril(torch.ones(n_seq, n_seq, dtype=torch.bool))  # Lower triangular matrix of True values
-
-    # Perform attention over each head
-    out_heads = [attention(q, k, v, causal_mask) for q, k, v in qkv_heads]  # n_head * [n_seq, n_embd/n_head]
+    col_idx = torch.arange(length).unsqueeze(0)   # (1, total_len)
+    row_idx = torch.arange(n_seq).unsqueeze(1)       # (n_seq, 1)
+    causal_mask = col_idx <= (length - n_seq + row_idx)  # (n_seq, total_len)
     
+    # Perform attention over each head
+    out_heads = [
+    attention(q, k, v, causal_mask, layernum=layernum, headidx=head_idx)
+    for head_idx, (q, k, v) in enumerate(qkv_heads)
+]
     # Merge heads
     """
         Task: merge multi-heads results
@@ -176,11 +201,11 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x
 
 
-def transformer_block(x, block, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
+def transformer_block(x, block, n_head,layernum,length):  # [n_seq, n_embd] -> [n_seq, n_embd]
     mlp, attn, ln_1, ln_2 = block['mlp'], block['attn'], block['ln_1'], block['ln_2']
     
     # multi-head causal self attention
-    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head,layernum=layernum,length=length)  # [n_seq, n_embd] -> [n_seq, n_embd]
 
     # position-wise feed forward network
     x = x + ffn(layer_norm(x, ln_2), mlp)  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -188,16 +213,18 @@ def transformer_block(x, block, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x
 
 
-def gpt2(inputs, params, n_head):  # [n_seq] -> [n_seq, n_vocab]
+def gpt2(inputs, params, n_head,length):  # [n_seq] -> [n_seq, n_vocab]
     wte, wpe, blocks, ln_f = params['wte'], params['wpe'], params['blocks'], params['ln_f']
     # token + positional embeddings
-    x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
+    start_pos=length-len(inputs)
+    x = wte[inputs] + wpe[range(start_pos, start_pos + len(inputs))]  # [n_seq] -> [n_seq, n_embd]
     
     x = torch.Tensor(x)
     # forward pass through n_layer transformer blocks
-    
+    layernum = 0
     for block in blocks:
-        x = transformer_block(x, block, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
+        x = transformer_block(x, block, n_head=n_head,layernum=layernum,length=length)  # [n_seq, n_embd] -> [n_seq, n_embd]
+        layernum += 1
     # projection to vocab
     x = layer_norm(x, ln_f)  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x @ wte.T  # [n_seq, n_embd] -> [n_seq, n_vocab]
@@ -205,11 +232,12 @@ def gpt2(inputs, params, n_head):  # [n_seq] -> [n_seq, n_vocab]
 
 def generate(inputs, params, n_head, n_tokens_to_generate):
     from tqdm import tqdm
-
+    processed_num=0
     for _ in tqdm(range(n_tokens_to_generate), "generating"):  # auto-regressive decode loop
-        logits = gpt2(inputs, params, n_head=n_head)  # model forward pass
+        logits = gpt2(inputs[processed_num:], params, n_head=n_head,length=len(inputs))  # model forward pass
         next_id = np.argmax(logits[-1])  # greedy sampling
         inputs.append(int(next_id))  # append prediction to input
+        processed_num =len(inputs)-1  # update the number of tokens that have been processed by the model
 
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
@@ -241,7 +269,6 @@ def greedy_speculative_generate(inputs, draft_params, target_params, hparams_dra
 def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", models_dir: str = "models"):
     
     from utils import load_encoder_hparams_and_params
-
     # load encoder, hparams, and params from the released open-ai gpt-2 files
     encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
 
